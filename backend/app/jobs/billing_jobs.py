@@ -1,6 +1,5 @@
 """
-Billing Jobs - Scheduled billing tasks
-Handles invoice generation, overdue detection, and payment reminders
+Update billing jobs to include suspension checks
 """
 
 from datetime import datetime, timedelta
@@ -10,6 +9,7 @@ from app.models.customers import Customer, CustomerStatusEnum
 from app.models.invoices import Invoice, InvoiceStatusEnum
 from app.services.invoice_service import InvoiceService
 from app.services.payment_service import PaymentService
+from app.services.suspension_service import SuspensionService
 
 def schedule_billing_jobs():
     """
@@ -35,6 +35,17 @@ def schedule_billing_jobs():
         hour=1,
         minute=0,
         name='Generate Monthly Invoices',
+        replace_existing=True
+    )
+    
+    # Daily task to check for suspension eligibility
+    scheduler.add_job(
+        id='check_suspension_eligibility',
+        func=check_suspension_eligibility_job,
+        trigger='cron',
+        hour=6,
+        minute=0,
+        name='Check Suspension Eligibility',
         replace_existing=True
     )
 
@@ -91,3 +102,42 @@ def generate_monthly_invoices_job():
     
     except Exception as e:
         print(f"Error in generate_monthly_invoices_job: {str(e)}")
+
+def check_suspension_eligibility_job():
+    """
+    Check for customers eligible for suspension based on overdue invoices.
+    Called daily at 6 AM.
+    """
+    try:
+        tenants = Tenant.query.filter_by(is_active=True).all()
+        
+        for tenant in tenants:
+            # Get all active customers
+            active_customers = Customer.query.filter(
+                Customer.tenant_id == tenant.id,
+                Customer.is_deleted == False,
+                Customer.status == CustomerStatusEnum.active
+            ).all()
+            
+            for customer in active_customers:
+                try:
+                    # Check suspension eligibility
+                    eligibility = SuspensionService.check_suspension_eligibility(
+                        customer.id,
+                        tenant.id
+                    )
+                    
+                    if eligibility['eligible']:
+                        # Suspend customer
+                        SuspensionService.suspend_customer(
+                            customer_id=customer.id,
+                            tenant_id=tenant.id,
+                            user_id=None  # System-generated
+                        )
+                        print(f"Suspended customer {customer.customer_number} for overdue payment")
+                
+                except Exception as e:
+                    print(f"Error checking suspension eligibility for customer {customer.id}: {str(e)}")
+    
+    except Exception as e:
+        print(f"Error in check_suspension_eligibility_job: {str(e)}")
